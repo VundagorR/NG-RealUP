@@ -8,4 +8,8 @@ import realesrgan.models
 
 if __name__ == '__main__':
     root_path = osp.abspath(osp.join(__file__, osp.pardir, osp.pardir))
-    train_pipeline(root_path)
+    try:
+        train_pipeline(root_path)
+    except Exception as e:
+        print(f'[ERROR] Training pipeline failed.\nОшибка в процессе обучения.\n{e}')
+        raise e
