@@ -1,7 +1,7 @@
 from basicsr.utils.registry import ARCH_REGISTRY
-from torch import nn as nn
+import torch
+from torch import nn
 from torch.nn import functional as F
-
 
 @ARCH_REGISTRY.register()
 class SRVGGNetCompact(nn.Module):
@@ -20,7 +20,7 @@ class SRVGGNetCompact(nn.Module):
     """
 
     def __init__(self, num_in_ch=3, num_out_ch=3, num_feat=64, num_conv=16, upscale=4, act_type='prelu'):
-        super(SRVGGNetCompact, self).__init__()
+        super().__init__()
         self.num_in_ch = num_in_ch
         self.num_out_ch = num_out_ch
         self.num_feat = num_feat
@@ -38,12 +38,13 @@ class SRVGGNetCompact(nn.Module):
             activation = nn.PReLU(num_parameters=num_feat)
         elif act_type == 'leakyrelu':
             activation = nn.LeakyReLU(negative_slope=0.1, inplace=True)
+        else:
+            raise ValueError(f'Unsupported activation type: {act_type}')
         self.body.append(activation)
 
         # the body structure
         for _ in range(num_conv):
             self.body.append(nn.Conv2d(num_feat, num_feat, 3, 1, 1))
-            # activation
             if act_type == 'relu':
                 activation = nn.ReLU(inplace=True)
             elif act_type == 'prelu':
@@ -59,8 +60,8 @@ class SRVGGNetCompact(nn.Module):
 
     def forward(self, x):
         out = x
-        for i in range(0, len(self.body)):
-            out = self.body[i](out)
+        for layer in self.body:
+            out = layer(out)
 
         out = self.upsampler(out)
         # add the nearest upsampled image, so that the network learns the residual
