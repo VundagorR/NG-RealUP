@@ -6,6 +6,7 @@ import numpy as np
 import os
 import shutil
 import subprocess
+import sys
 import torch
 from basicsr.archs.rrdbnet_arch import RRDBNet
 from basicsr.utils.download_util import load_file_from_url
@@ -24,15 +25,23 @@ except ImportError:
 
 
 def get_video_meta_info(video_path):
-    ret = {}
-    probe = ffmpeg.probe(video_path)
+    try:
+        probe = ffmpeg.probe(video_path)
+    except Exception as e:
+        print(f'Failed to probe video metadata: {e}')
+        sys.exit(1)
     video_streams = [stream for stream in probe['streams'] if stream['codec_type'] == 'video']
+    if not video_streams:
+        print('No video stream found.')
+        sys.exit(1)
     has_audio = any(stream['codec_type'] == 'audio' for stream in probe['streams'])
-    ret['width'] = video_streams[0]['width']
-    ret['height'] = video_streams[0]['height']
-    ret['fps'] = eval(video_streams[0]['avg_frame_rate'])
-    ret['audio'] = ffmpeg.input(video_path).audio if has_audio else None
-    ret['nb_frames'] = int(video_streams[0]['nb_frames'])
+    ret = {
+        'width': video_streams[0]['width'],
+        'height': video_streams[0]['height'],
+        'fps': eval(video_streams[0]['avg_frame_rate']),
+        'audio': ffmpeg.input(video_path).audio if has_audio else None,
+        'nb_frames': int(video_streams[0].get('nb_frames', 0))
+    }
     return ret
 
 
@@ -43,8 +52,9 @@ def get_sub_video(args, num_process, process_idx):
     duration = int(meta['nb_frames'] / meta['fps'])
     part_time = duration // num_process
     print(f'duration: {duration}, part_time: {part_time}')
-    os.makedirs(osp.join(args.output, f'{args.video_name}_inp_tmp_videos'), exist_ok=True)
-    out_path = osp.join(args.output, f'{args.video_name}_inp_tmp_videos', f'{process_idx:03d}.mp4')
+    tmp_dir = osp.join(args.output, f'{args.video_name}_inp_tmp_videos')
+    os.makedirs(tmp_dir, exist_ok=True)
+    out_path = osp.join(tmp_dir, f'{process_idx:03d}.mp4')
     cmd = [
         args.ffmpeg_bin,
         '-i', args.input,
@@ -53,8 +63,12 @@ def get_sub_video(args, num_process, process_idx):
     if process_idx != num_process - 1:
         cmd += ['-to', str(part_time * (process_idx + 1))]
     cmd += ['-async', '1', out_path, '-y']
-    print(' '.join(cmd))
-    subprocess.call(cmd)
+    print('Running ffmpeg command:', ' '.join(cmd))
+    try:
+        subprocess.check_call(cmd)
+    except subprocess.CalledProcessError as e:
+        print(f'FFmpeg failed with error: {e}')
+        sys.exit(1)
     return out_path
 
 
@@ -64,9 +78,10 @@ class Reader:
         self.args = args
         input_type = mimetypes.guess_type(args.input)[0]
         self.input_type = 'folder' if input_type is None else input_type
-        self.paths = []  # for image&folder type
+        self.paths = []  # for image & folder type
         self.audio = None
         self.input_fps = None
+
         if self.input_type and self.input_type.startswith('video'):
             video_path = get_sub_video(args, total_workers, worker_idx)
             self.stream_reader = (
@@ -79,7 +94,6 @@ class Reader:
             self.input_fps = meta['fps']
             self.audio = meta['audio']
             self.nb_frames = meta['nb_frames']
-
         else:
             if self.input_type and self.input_type.startswith('image'):
                 self.paths = [args.input]
@@ -90,10 +104,14 @@ class Reader:
                 self.paths = paths[num_frame_per_worker * worker_idx:num_frame_per_worker * (worker_idx + 1)]
 
             self.nb_frames = len(self.paths)
-            assert self.nb_frames > 0, 'empty folder'
+            if self.nb_frames == 0:
+                print('Error: input folder is empty / Папка с изображениями пуста.')
+                sys.exit(1)
+
             from PIL import Image
             tmp_img = Image.open(self.paths[0])
             self.width, self.height = tmp_img.size
+
         self.idx = 0
 
     def get_resolution(self):
@@ -113,7 +131,7 @@ class Reader:
         return self.nb_frames
 
     def get_frame_from_stream(self):
-        img_bytes = self.stream_reader.stdout.read(self.width * self.height * 3)  # 3 bytes for one pixel
+        img_bytes = self.stream_reader.stdout.read(self.width * self.height * 3)  # 3 bytes per pixel
         if not img_bytes:
             return None
         img = np.frombuffer(img_bytes, np.uint8).reshape([self.height, self.width, 3])
@@ -143,8 +161,8 @@ class Writer:
     def __init__(self, args, audio, height, width, video_save_path, fps):
         out_width, out_height = int(width * args.outscale), int(height * args.outscale)
         if out_height > 2160:
-            print('You are generating video that is larger than 4K, which will be very slow due to IO speed.',
-                  'We highly recommend to decrease the outscale(aka, -s).')
+            print('Warning: You are generating a video larger than 4K, which may be slow due to IO speed.')
+            print('Рекомендуется уменьшить масштаб выходного видео (параметр -s).')
 
         if audio is not None:
             self.stream_writer = (
@@ -166,8 +184,8 @@ class Writer:
                                      pipe_stdin=True, pipe_stdout=True, cmd=args.ffmpeg_bin))
 
     def write_frame(self, frame):
-        frame = frame.astype(np.uint8).tobytes()
-        self.stream_writer.stdin.write(frame)
+        frame_bytes = frame.astype(np.uint8).tobytes()
+        self.stream_writer.stdin.write(frame_bytes)
 
     def close(self):
         self.stream_writer.stdin.close()
@@ -175,86 +193,103 @@ class Writer:
 
 
 def inference_video(args, video_save_path, device=None, total_workers=1, worker_idx=0):
-    import torch
+    # Определяем устройство
+    if device is None:
+        device = 'cuda' if torch.cuda.is_available() else 'cpu'
+    print(f'Using device: {device}')
 
-    # Determine model according to model_name
+    # Определение модели по имени
     args.model_name = args.model_name.split('.pth')[0]
-    if args.model_name == 'RealESRGAN_x4plus':  # x4 RRDBNet model
-        model = RRDBNet(num_in_ch=3, num_out_ch=3, num_feat=64, num_block=23, num_grow_ch=32, scale=4)
-        netscale = 4
-        file_url = ['https://github.com/xinntao/Real-ESRGAN/releases/download/v0.1.0/RealESRGAN_x4plus.pth']
-    elif args.model_name == 'RealESRNet_x4plus':  # x4 RRDBNet model
-        model = RRDBNet(num_in_ch=3, num_out_ch=3, num_feat=64, num_block=23, num_grow_ch=32, scale=4)
-        netscale = 4
-        file_url = ['https://github.com/xinntao/Real-ESRGAN/releases/download/v0.1.1/RealESRNet_x4plus.pth']
-    elif args.model_name == 'RealESRGAN_x4plus_anime_6B':  # x4 RRDBNet model with 6 blocks
-        model = RRDBNet(num_in_ch=3, num_out_ch=3, num_feat=64, num_block=6, num_grow_ch=32, scale=4)
-        netscale = 4
-        file_url = ['https://github.com/xinntao/Real-ESRGAN/releases/download/v0.2.2.4/RealESRGAN_x4plus_anime_6B.pth']
-    elif args.model_name == 'RealESRGAN_x2plus':  # x2 RRDBNet model
-        model = RRDBNet(num_in_ch=3, num_out_ch=3, num_feat=64, num_block=23, num_grow_ch=32, scale=2)
-        netscale = 2
-        file_url = ['https://github.com/xinntao/Real-ESRGAN/releases/download/v0.2.1/RealESRGAN_x2plus.pth']
-    elif args.model_name == 'realesr-animevideov3':  # x4 VGG-style model (XS size)
-        model = SRVGGNetCompact(num_in_ch=3, num_out_ch=3, num_feat=64, num_conv=16, upscale=4, act_type='prelu')
-        netscale = 4
-        file_url = ['https://github.com/xinntao/Real-ESRGAN/releases/download/v0.2.5.0/realesr-animevideov3.pth']
-    elif args.model_name == 'realesr-general-x4v3':  # x4 VGG-style model (S size)
-        model = SRVGGNetCompact(num_in_ch=3, num_out_ch=3, num_feat=64, num_conv=32, upscale=4, act_type='prelu')
-        netscale = 4
-        file_url = [
-            'https://github.com/xinntao/Real-ESRGAN/releases/download/v0.2.5.0/realesr-general-wdn-x4v3.pth',
-            'https://github.com/xinntao/Real-ESRGAN/releases/download/v0.2.5.0/realesr-general-x4v3.pth'
-        ]
-    else:
-        raise ValueError(f'Unknown model name {args.model_name}')
+    try:
+        if args.model_name == 'RealESRGAN_x4plus':  # x4 RRDBNet model
+            model = RRDBNet(num_in_ch=3, num_out_ch=3, num_feat=64, num_block=23, num_grow_ch=32, scale=4)
+            netscale = 4
+            file_url = ['https://github.com/xinntao/Real-ESRGAN/releases/download/v0.1.0/RealESRGAN_x4plus.pth']
+        elif args.model_name == 'RealESRNet_x4plus':  # x4 RRDBNet model
+            model = RRDBNet(num_in_ch=3, num_out_ch=3, num_feat=64, num_block=23, num_grow_ch=32, scale=4)
+            netscale = 4
+            file_url = ['https://github.com/xinntao/Real-ESRGAN/releases/download/v0.1.1/RealESRNet_x4plus.pth']
+        elif args.model_name == 'RealESRGAN_x4plus_anime_6B':  # x4 RRDBNet model with 6 blocks
+            model = RRDBNet(num_in_ch=3, num_out_ch=3, num_feat=64, num_block=6, num_grow_ch=32, scale=4)
+            netscale = 4
+            file_url = ['https://github.com/xinntao/Real-ESRGAN/releases/download/v0.2.2.4/RealESRGAN_x4plus_anime_6B.pth']
+        elif args.model_name == 'RealESRGAN_x2plus':  # x2 RRDBNet model
+            model = RRDBNet(num_in_ch=3, num_out_ch=3, num_feat=64, num_block=23, num_grow_ch=32, scale=2)
+            netscale = 2
+            file_url = ['https://github.com/xinntao/Real-ESRGAN/releases/download/v0.2.1/RealESRGAN_x2plus.pth']
+        elif args.model_name == 'realesr-animevideov3':  # x4 VGG-style model (XS size)
+            model = SRVGGNetCompact(num_in_ch=3, num_out_ch=3, num_feat=64, num_conv=16, upscale=4, act_type='prelu')
+            netscale = 4
+            file_url = ['https://github.com/xinntao/Real-ESRGAN/releases/download/v0.2.5.0/realesr-animevideov3.pth']
+        elif args.model_name == 'realesr-general-x4v3':  # x4 VGG-style model (S size)
+            model = SRVGGNetCompact(num_in_ch=3, num_out_ch=3, num_feat=64, num_conv=32, upscale=4, act_type='prelu')
+            netscale = 4
+            file_url = [
+                'https://github.com/xinntao/Real-ESRGAN/releases/download/v0.2.5.0/realesr-general-wdn-x4v3.pth',
+                'https://github.com/xinntao/Real-ESRGAN/releases/download/v0.2.5.0/realesr-general-x4v3.pth'
+            ]
+        else:
+            print(f'Unknown model name: {args.model_name}')
+            sys.exit(1)
+    except Exception as e:
+        print(f'Error while initializing model: {e}')
+        sys.exit(1)
 
-    # Determine model paths
+    # Определение пути к модели
     model_path = os.path.join('weights', args.model_name + '.pth')
     if not os.path.isfile(model_path):
         ROOT_DIR = os.path.dirname(os.path.abspath(__file__))
-        for url in file_url:
-            model_path = load_file_from_url(
-                url=url, model_dir=os.path.join(ROOT_DIR, 'weights'), progress=True, file_name=None)
+        try:
+            for url in file_url:
+                print(f'Downloading model from {url} ...')
+                model_path = load_file_from_url(
+                    url=url, model_dir=os.path.join(ROOT_DIR, 'weights'), progress=True, file_name=None)
+                print('Model downloaded successfully.')
+        except Exception as e:
+            print(f'Failed to download model.\nНе удалось загрузить модель.\nError: {e}')
+            sys.exit(1)
 
-    # Use dni to control denoise strength
+    # Denoise weight для модели realesr-general-x4v3
     dni_weight = None
     if args.model_name == 'realesr-general-x4v3' and args.denoise_strength != 1:
         wdn_model_path = model_path.replace('realesr-general-x4v3', 'realesr-general-wdn-x4v3')
         model_path = [model_path, wdn_model_path]
         dni_weight = [args.denoise_strength, 1 - args.denoise_strength]
 
-    # Device fallback
-    if device is None:
-        device = 'cuda' if torch.cuda.is_available() else 'cpu'
-
-    # Restorer
-    upsampler = RealESRGANer(
-        scale=netscale,
-        model_path=model_path,
-        dni_weight=dni_weight,
-        model=model,
-        tile=args.tile,
-        tile_pad=args.tile_pad,
-        pre_pad=args.pre_pad,
-        half=not args.fp32,
-        device=device,
-    )
+    # Создание объекта RealESRGANer
+    try:
+        upsampler = RealESRGANer(
+            scale=netscale,
+            model_path=model_path,
+            dni_weight=dni_weight,
+            model=model,
+            tile=args.tile,
+            tile_pad=args.tile_pad,
+            pre_pad=args.pre_pad,
+            half=not args.fp32,
+            device=device,
+        )
+    except Exception as e:
+        print(f'Error initializing RealESRGANer.\nОшибка инициализации RealESRGANer.\n{e}')
+        sys.exit(1)
 
     if 'anime' in args.model_name and args.face_enhance:
-        print('face_enhance is not supported in anime models, we turned this option off for you. '
-              'if you insist on turning it on, please manually comment the relevant lines of code.')
+        print('Face enhancement is not supported in anime models. Disabling face_enhance option.')
         args.face_enhance = False
 
-    if args.face_enhance:  # Use GFPGAN for face enhancement
-        from gfpgan import GFPGANer
-        face_enhancer = GFPGANer(
-            model_path='https://github.com/TencentARC/GFPGAN/releases/download/v1.3.0/GFPGANv1.3.pth',
-            upscale=args.outscale,
-            arch='clean',
-            channel_multiplier=2,
-            bg_upsampler=upsampler,
-            device=device)  # TODO support custom device
+    if args.face_enhance:
+        try:
+            from gfpgan import GFPGANer
+            face_enhancer = GFPGANer(
+                model_path='https://github.com/TencentARC/GFPGAN/releases/download/v1.3.0/GFPGANv1.3.pth',
+                upscale=args.outscale,
+                arch='clean',
+                channel_multiplier=2,
+                bg_upsampler=upsampler,
+                device=device)
+        except Exception as e:
+            print(f'Failed to initialize GFPGANer.\nНе удалось инициализировать GFPGANer.\n{e}')
+            face_enhancer = None
     else:
         face_enhancer = None
 
@@ -272,13 +307,17 @@ def inference_video(args, video_save_path, device=None, total_workers=1, worker_
 
         try:
             with torch.inference_mode():
-                if args.face_enhance:
+                if face_enhancer is not None:
                     _, _, output = face_enhancer.enhance(img, has_aligned=False, only_center_face=False, paste_back=True)
                 else:
                     output, _ = upsampler.enhance(img, outscale=args.outscale)
         except RuntimeError as error:
-            print('Error', error)
+            print(f'Runtime error during inference: {error}')
             print('If you encounter CUDA out of memory, try to set --tile with a smaller number.')
+            print('Если возникла ошибка CUDA out of memory, попробуйте уменьшить размер тайла с помощью --tile.')
+            continue
+        except Exception as e:
+            print(f'Unexpected error during inference: {e}')
             continue
 
         writer.write_frame(output)
@@ -329,8 +368,13 @@ def run(args):
     cmd = [
         args.ffmpeg_bin, '-f', 'concat', '-safe', '0', '-i', vidlist_path, '-c', 'copy', video_save_path
     ]
-    print(' '.join(cmd))
-    subprocess.call(cmd)
+    print('Combining sub videos with command:', ' '.join(cmd))
+    try:
+        subprocess.check_call(cmd)
+    except subprocess.CalledProcessError as e:
+        print(f'FFmpeg concat failed: {e}')
+        sys.exit(1)
+
     shutil.rmtree(osp.join(args.output, f'{args.video_name}_out_tmp_videos'))
     inp_tmp_videos = osp.join(args.output, f'{args.video_name}_inp_tmp_videos')
     if osp.exists(inp_tmp_videos):
@@ -386,10 +430,8 @@ def main():
     args.input = args.input.rstrip('/').rstrip('\\')
     os.makedirs(args.output, exist_ok=True)
 
-    if mimetypes.guess_type(args.input)[0] is not None and mimetypes.guess_type(args.input)[0].startswith('video'):
-        is_video = True
-    else:
-        is_video = False
+    input_mime = mimetypes.guess_type(args.input)[0]
+    is_video = input_mime is not None and input_mime.startswith('video')
 
     if is_video and args.input.endswith('.flv'):
         mp4_path = args.input.replace('.flv', '.mp4')
