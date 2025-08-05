@@ -11,20 +11,12 @@ version_file = 'realesrgan/version.py'
 
 def readme():
     with open('README.md', encoding='utf-8') as f:
-        content = f.read()
-    return content
+        return f.read()
 
 
 def get_git_hash():
-
     def _minimal_ext_cmd(cmd):
-        # construct minimal environment
-        env = {}
-        for k in ['SYSTEMROOT', 'PATH', 'HOME']:
-            v = os.environ.get(k)
-            if v is not None:
-                env[k] = v
-        # LANGUAGE is used on win32
+        env = {k: os.environ.get(k) for k in ['SYSTEMROOT', 'PATH', 'HOME'] if os.environ.get(k) is not None}
         env['LANGUAGE'] = 'C'
         env['LANG'] = 'C'
         env['LC_ALL'] = 'C'
@@ -34,7 +26,7 @@ def get_git_hash():
     try:
         out = _minimal_ext_cmd(['git', 'rev-parse', 'HEAD'])
         sha = out.strip().decode('ascii')
-    except OSError:
+    except Exception:
         sha = 'unknown'
 
     return sha
@@ -45,7 +37,6 @@ def get_hash():
         sha = get_git_hash()[:7]
     else:
         sha = 'unknown'
-
     return sha
 
 
@@ -57,13 +48,15 @@ __gitsha__ = '{}'
 version_info = ({})
 """
     sha = get_hash()
-    with open('VERSION', 'r') as f:
-        SHORT_VERSION = f.read().strip()
+    if not os.path.exists('VERSION'):
+        SHORT_VERSION = '0.0.0'
+    else:
+        with open('VERSION', 'r') as f:
+            SHORT_VERSION = f.read().strip()
     VERSION_INFO = ', '.join([x if x.isdigit() else f'"{x}"' for x in SHORT_VERSION.split('.')])
 
-    version_file_str = content.format(time.asctime(), SHORT_VERSION, sha, VERSION_INFO)
     with open(version_file, 'w') as f:
-        f.write(version_file_str)
+        f.write(content.format(time.asctime(), SHORT_VERSION, sha, VERSION_INFO))
 
 
 def get_version():
@@ -75,7 +68,7 @@ def get_version():
 def get_requirements(filename='requirements.txt'):
     here = os.path.dirname(os.path.realpath(__file__))
     with open(os.path.join(here, filename), 'r') as f:
-        requires = [line.replace('\n', '') for line in f.readlines()]
+        requires = [line.strip() for line in f if line.strip() and not line.startswith('#')]
     return requires
 
 
@@ -102,6 +95,7 @@ if __name__ == '__main__':
             'Programming Language :: Python :: 3.8',
         ],
         license='BSD-3-Clause License',
-        setup_requires=['cython', 'numpy'],
+        setup_requires=['cython>=0.29.21', 'numpy>=1.20.0'],
         install_requires=get_requirements(),
-        zip_safe=False)
+        zip_safe=False
+    )
