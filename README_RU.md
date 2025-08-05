@@ -247,13 +247,13 @@ python inference_realesrgan.py -n RealESRGAN_x4plus_anime_6B -i inputs
 
 &nbsp;&nbsp;&nbsp;&nbsp;**Графические интерфейсы (GUI)**
 
-- [Waifu2x-Extension-GUI](https://github.com/AaronFeng753/Waifu2x-Extension-GUI) by [AaronFeng753](https://github.com/AaronFeng753)
-- [Squirrel-RIFE](https://github.com/Justin62628/Squirrel-RIFE) by [Justin62628](https://github.com/Justin62628)
-- [Real-GUI](https://github.com/scifx/Real-GUI) by [scifx](https://github.com/scifx)
-- [Real-ESRGAN_GUI](https://github.com/net2cn/Real-ESRGAN_GUI) by [net2cn](https://github.com/net2cn)
-- [Real-ESRGAN-EGUI](https://github.com/WGzeyu/Real-ESRGAN-EGUI) by [WGzeyu](https://github.com/WGzeyu)
-- [anime_upscaler](https://github.com/shangar21/anime_upscaler) by [shangar21](https://github.com/shangar21)
-- [Upscayl](https://github.com/upscayl/upscayl) by [Nayam Amarshe](https://github.com/NayamAmarshe) and [TGS963](https://github.com/TGS963)
+- [Waifu2x-Extension-GUI](https://github.com/AaronFeng753/Waifu2x-Extension-GUI) от [AaronFeng753](https://github.com/AaronFeng753)
+- [Squirrel-RIFE](https://github.com/Justin62628/Squirrel-RIFE) от [Justin62628](https://github.com/Justin62628)
+- [Real-GUI](https://github.com/scifx/Real-GUI) от [scifx](https://github.com/scifx)
+- [Real-ESRGAN_GUI](https://github.com/net2cn/Real-ESRGAN_GUI) от [net2cn](https://github.com/net2cn)
+- [Real-ESRGAN-EGUI](https://github.com/WGzeyu/Real-ESRGAN-EGUI) от [WGzeyu](https://github.com/WGzeyu)
+- [anime_upscaler](https://github.com/shangar21/anime_upscaler) от [shangar21](https://github.com/shangar21)
+- [Upscayl](https://github.com/upscayl/upscayl) bот [Nayam Amarshe](https://github.com/NayamAmarshe) и [TGS963](https://github.com/TGS963)
 
 ## 🤗 Благодарности
 
