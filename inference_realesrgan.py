@@ -10,8 +10,7 @@ from realesrgan.archs.srvgg_arch import SRVGGNetCompact
 
 
 def main():
-    """Inference demo for Real-ESRGAN.
-    """
+    """Inference demo for Real-ESRGAN."""
     parser = argparse.ArgumentParser()
     parser.add_argument('-i', '--input', type=str, default='inputs', help='Input image or folder')
     parser.add_argument(
@@ -50,11 +49,13 @@ def main():
         default='auto',
         help='Image extension. Options: auto | jpg | png, auto means using the same extension as inputs')
     parser.add_argument(
-        '-g', '--gpu-id', type=int, default=None, help='gpu device to use (default=None) can be 0,1,2 for multi-gpu')
+        '-g', '--gpu_id', type=int, default=0, help='gpu device to use (default=0)')
 
     args = parser.parse_args()
 
-    # determine models according to model names
+    device = f'cuda:{args.gpu_id}' if torch.cuda.is_available() and args.gpu_id is not None else 'cpu'
+
+    # Determine model according to model_name
     args.model_name = args.model_name.split('.')[0]
     if args.model_name == 'RealESRGAN_x4plus':  # x4 RRDBNet model
         model = RRDBNet(num_in_ch=3, num_out_ch=3, num_feat=64, num_block=23, num_grow_ch=32, scale=4)
@@ -83,8 +84,10 @@ def main():
             'https://github.com/xinntao/Real-ESRGAN/releases/download/v0.2.5.0/realesr-general-wdn-x4v3.pth',
             'https://github.com/xinntao/Real-ESRGAN/releases/download/v0.2.5.0/realesr-general-x4v3.pth'
         ]
+    else:
+        raise ValueError(f'Unknown model name {args.model_name}')
 
-    # determine model paths
+    # Determine model path
     if args.model_path is not None:
         model_path = args.model_path
     else:
@@ -92,18 +95,17 @@ def main():
         if not os.path.isfile(model_path):
             ROOT_DIR = os.path.dirname(os.path.abspath(__file__))
             for url in file_url:
-                # model_path will be updated
                 model_path = load_file_from_url(
                     url=url, model_dir=os.path.join(ROOT_DIR, 'weights'), progress=True, file_name=None)
 
-    # use dni to control the denoise strength
+    # Use dni to control denoise strength
     dni_weight = None
     if args.model_name == 'realesr-general-x4v3' and args.denoise_strength != 1:
         wdn_model_path = model_path.replace('realesr-general-x4v3', 'realesr-general-wdn-x4v3')
         model_path = [model_path, wdn_model_path]
         dni_weight = [args.denoise_strength, 1 - args.denoise_strength]
 
-    # restorer
+    # Restorer
     upsampler = RealESRGANer(
         scale=netscale,
         model_path=model_path,
@@ -113,7 +115,8 @@ def main():
         tile_pad=args.tile_pad,
         pre_pad=args.pre_pad,
         half=not args.fp32,
-        gpu_id=args.gpu_id)
+        device=device,
+    )
 
     if args.face_enhance:  # Use GFPGAN for face enhancement
         from gfpgan import GFPGANer
@@ -122,7 +125,11 @@ def main():
             upscale=args.outscale,
             arch='clean',
             channel_multiplier=2,
-            bg_upsampler=upsampler)
+            bg_upsampler=upsampler,
+            device=device)
+    else:
+        face_enhancer = None
+
     os.makedirs(args.output, exist_ok=True)
 
     if os.path.isfile(args.input):
@@ -132,35 +139,43 @@ def main():
 
     for idx, path in enumerate(paths):
         imgname, extension = os.path.splitext(os.path.basename(path))
-        print('Testing', idx, imgname)
+        print(f'Testing {idx}: {imgname}')
 
         img = cv2.imread(path, cv2.IMREAD_UNCHANGED)
-        if len(img.shape) == 3 and img.shape[2] == 4:
-            img_mode = 'RGBA'
-        else:
-            img_mode = None
+        if img is None:
+            print(f'Warning: Failed to read {path}')
+            continue
+
+        img_mode = 'RGBA' if (len(img.shape) == 3 and img.shape[2] == 4) else None
 
         try:
-            if args.face_enhance:
-                _, _, output = face_enhancer.enhance(img, has_aligned=False, only_center_face=False, paste_back=True)
-            else:
-                output, _ = upsampler.enhance(img, outscale=args.outscale)
+            with torch.inference_mode():
+                if args.face_enhance:
+                    _, _, output = face_enhancer.enhance(img, has_aligned=False, only_center_face=False, paste_back=True)
+                else:
+                    output, _ = upsampler.enhance(img, outscale=args.outscale)
         except RuntimeError as error:
-            print('Error', error)
+            print('Error:', error)
             print('If you encounter CUDA out of memory, try to set --tile with a smaller number.')
+            continue
+
+        if args.ext == 'auto':
+            ext = extension[1:]
         else:
-            if args.ext == 'auto':
-                extension = extension[1:]
-            else:
-                extension = args.ext
-            if img_mode == 'RGBA':  # RGBA images should be saved in png format
-                extension = 'png'
-            if args.suffix == '':
-                save_path = os.path.join(args.output, f'{imgname}.{extension}')
-            else:
-                save_path = os.path.join(args.output, f'{imgname}_{args.suffix}.{extension}')
-            cv2.imwrite(save_path, output)
+            ext = args.ext
+
+        if img_mode == 'RGBA':  # RGBA images should be saved in png format
+            ext = 'png'
+
+        if args.suffix == '':
+            save_path = os.path.join(args.output, f'{imgname}.{ext}')
+        else:
+            save_path = os.path.join(args.output, f'{imgname}_{args.suffix}.{ext}')
+
+        cv2.imwrite(save_path, output)
+        print(f'Saved: {save_path}')
 
 
 if __name__ == '__main__':
+    import torch
     main()
