@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "realesrgan"
+version = "0.0.0"  # будет перезаписана из setup.py
+description = "Real-ESRGAN aims at developing Practical Algorithms for General Image Restoration"
+readme = "README.md"
+requires-python = ">=3.7"
+license = {text = "BSD-3-Clause License"}
+authors = [
+  {name = "Xintao Wang", email = "xintao.wang@outlook.com"}
+]
+keywords = ["computer vision", "pytorch", "image restoration", "super-resolution", "esrgan", "real-esrgan"]
+classifiers = [
+  "Development Status :: 4 - Beta",
+  "License :: OSI Approved :: Apache Software License",
+  "Operating System :: OS Independent",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.7",
+  "Programming Language :: Python :: 3.8"
+]
+
+dependencies = [
+  # сюда можно вручную вставить зависимости из requirements.txt
+]
+
+[tool.setuptools.packages.find]
+exclude = ["options", "datasets", "experiments", "results", "tb_logger", "wandb"]
